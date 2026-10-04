@@ -121,8 +121,10 @@
   function goBack(){
     cleanup();
     const returnUrl = getReturnUrl();
-    if (returnUrl) location.href = returnUrl;
-    else history.back();
+    if (returnUrl) {
+      try { window.top.location.href = returnUrl; }
+      catch (e) { location.href = returnUrl; }
+    } else history.back();
   }
 
   function finish(value){
@@ -146,7 +148,10 @@
 
     const u = new URL(returnUrl);
     u.searchParams.set('barcode', code);
-    setTimeout(function(){ location.href = u.toString(); }, 120);
+    setTimeout(function(){
+      try { window.top.location.href = u.toString(); }
+      catch (e) { location.href = u.toString(); }
+    }, 120);
   }
 
   async function startScan(){
