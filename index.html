@@ -59,6 +59,7 @@
 (function(){
   'use strict';
 
+  const DEFAULT_RETURN_URL = 'https://script.google.com/macros/s/AKfycbyGN_4wQXL2op7D1msVufigvp45R-wchl-HUcgX48YCH7K0UHNN5dBhEj1wS3iNOP0l/exec';
   const returnUrlRaw = new URLSearchParams(location.search).get('return') || '';
   const video = document.getElementById('preview');
   const startBtn = document.getElementById('startBtn');
@@ -94,12 +95,10 @@
   }
 
   function getReturnUrl(){
-    if (isAllowedReturnUrl(returnUrlRaw)) return returnUrlRaw;
-    try{
-      const ref = document.referrer || '';
-      if (isAllowedReturnUrl(ref)) return ref;
-    }catch(e){}
-    return '';
+    // Gunakan URL Web App utama yang tetap. Jangan pernah mengembalikan
+    // user ke googleusercontent.com/userCodeAppPanel karena itu adalah
+    // iframe internal Apps Script dan dapat menghasilkan halaman putih.
+    return DEFAULT_RETURN_URL;
   }
 
   function validReturnUrl(){
