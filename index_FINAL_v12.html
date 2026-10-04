@@ -1,0 +1,256 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#061426">
+  <title>Scan Barcode - Lab Elektro</title>
+  <script src="https://unpkg.com/@zxing/browser@0.1.5"></script>
+  <style>
+    *{box-sizing:border-box}
+    html,body{margin:0;min-height:100%;background:#061426;color:#fff;font-family:Arial,Helvetica,sans-serif}
+    body{display:flex;justify-content:center;align-items:center;min-height:100vh;padding:18px}
+    .app{width:min(560px,100%)}
+    .top{text-align:center;margin-bottom:14px}
+    .top h1{font-size:21px;margin:0 0 6px}
+    .top p{font-size:14px;opacity:.8;margin:0}
+    .card{background:#fff;color:#172033;border-radius:18px;padding:14px;box-shadow:0 12px 40px rgba(0,0,0,.35)}
+    .camera{position:relative;background:#000;border-radius:13px;overflow:hidden;aspect-ratio:4/3}
+    video{display:block;width:100%;height:100%;object-fit:cover;background:#000}
+    .frame{position:absolute;left:9%;right:9%;top:29%;height:42%;border:2px solid rgba(255,255,255,.95);border-radius:10px;pointer-events:none}
+    .hint{margin:11px 2px 0;text-align:center;font-size:14px;color:#5c6575;line-height:1.45;min-height:40px}
+    .status{margin-top:9px;padding:10px 11px;border-radius:9px;background:#f0f2f5;color:#4d5562;font-size:13px;line-height:1.4;text-align:center}
+    .status.ok{background:#e9f8ef;color:#176b3b}
+    .status.error{background:#fff0f0;color:#9b2424}
+    .buttons{display:flex;gap:9px;margin-top:11px}
+    button{border:0;border-radius:10px;padding:13px 14px;font-size:15px;font-weight:700;cursor:pointer;min-height:48px;flex:1}
+    .primary{background:#062f58;color:#fff}
+    .secondary{background:#e9ebef;color:#27303e}
+    button:disabled{opacity:.55;cursor:not-allowed}
+    .result{display:none;margin-top:12px;padding:12px;border-radius:10px;background:#e9f8ef;color:#176b3b;text-align:center;font-weight:700;word-break:break-word}
+    .small{font-size:12px;color:#737b88;text-align:center;margin-top:10px;line-height:1.4}
+    @media(max-width:480px){body{padding:10px}.card{padding:10px}.top h1{font-size:19px}.buttons{flex-direction:column}}
+  </style>
+</head>
+<body>
+  <main class="app">
+    <div class="top">
+      <h1>Scan Kode Alat</h1>
+      <p>Laboratorium Teknik Elektro | UMSIDA</p>
+    </div>
+
+    <section class="card">
+      <div class="camera">
+        <video id="preview" playsinline muted></video>
+        <div class="frame"></div>
+      </div>
+      <div id="hint" class="hint">Tekan <b>Izinkan &amp; Mulai Scan</b>. Chrome akan meminta izin kamera. Pilih <b>Izinkan</b>.</div>
+      <div id="status" class="status">Kamera belum diaktifkan.</div>
+      <div id="result" class="result"></div>
+      <div class="buttons">
+        <button id="startBtn" class="primary" type="button">Izinkan &amp; Mulai Scan</button>
+        <button id="backBtn" class="secondary" type="button">Kembali</button>
+      </div>
+      <div class="small">Kamera belakang diprioritaskan. Barcode dibaca otomatis tanpa tombol foto.</div>
+    </section>
+  </main>
+
+<script>
+(function(){
+  'use strict';
+
+  const returnUrlRaw = new URLSearchParams(location.search).get('return') || '';
+  const video = document.getElementById('preview');
+  const startBtn = document.getElementById('startBtn');
+  const backBtn = document.getElementById('backBtn');
+  const status = document.getElementById('status');
+  const hint = document.getElementById('hint');
+  const resultBox = document.getElementById('result');
+
+  let controls = null;
+  let stream = null;
+  let detector = null;
+  let detectorFrame = null;
+  let finished = false;
+
+  function setStatus(text, type){
+    status.textContent = text;
+    status.className = 'status' + (type ? ' ' + type : '');
+  }
+
+  function isAllowedReturnUrl(value){
+    try{
+      const u = new URL(value);
+      const host = u.hostname.toLowerCase();
+      const allowedHost =
+        host === 'script.google.com' ||
+        host === 'script.googleusercontent.com' ||
+        host.endsWith('.googleusercontent.com');
+      const allowedPath =
+        u.pathname.indexOf('/macros/') === 0 ||
+        u.pathname.indexOf('/userCodeAppPanel') === 0;
+      return u.protocol === 'https:' && allowedHost && allowedPath;
+    }catch(e){ return false; }
+  }
+
+  function getReturnUrl(){
+    if (isAllowedReturnUrl(returnUrlRaw)) return returnUrlRaw;
+    try{
+      const ref = document.referrer || '';
+      if (isAllowedReturnUrl(ref)) return ref;
+    }catch(e){}
+    return '';
+  }
+
+  function validReturnUrl(){
+    return !!getReturnUrl();
+  }
+
+  function cleanup(){
+    try{ if (controls && controls.stop) controls.stop(); }catch(e){}
+    controls = null;
+    if (detectorFrame) { cancelAnimationFrame(detectorFrame); detectorFrame = null; }
+    detector = null;
+    try{
+      if (stream) stream.getTracks().forEach(function(t){ try{t.stop();}catch(e){} });
+    }catch(e){}
+    stream = null;
+    try{ video.pause(); video.srcObject = null; }catch(e){}
+  }
+
+  function goBack(){
+    cleanup();
+    const returnUrl = getReturnUrl();
+    if (returnUrl) location.href = returnUrl;
+    else history.back();
+  }
+
+  function finish(value){
+    if (finished) return;
+    const code = String(value || '').trim();
+    if (!code) return;
+    finished = true;
+    resultBox.style.display = 'block';
+    resultBox.textContent = '✓ Kode terbaca: ' + code;
+    setStatus('Kode berhasil dibaca. Kembali ke aplikasi...', 'ok');
+    hint.textContent = 'Pencarian alat akan terisi otomatis.';
+    cleanup();
+
+    const returnUrl = getReturnUrl();
+    if (!returnUrl){
+      setStatus('Kode terbaca, tetapi halaman asal tidak ditemukan. Buka scanner dari tombol Scan Barcode di aplikasi.', 'error');
+      startBtn.disabled = false;
+      finished = false;
+      return;
+    }
+
+    const u = new URL(returnUrl);
+    u.searchParams.set('barcode', code);
+    setTimeout(function(){ location.href = u.toString(); }, 120);
+  }
+
+  async function startScan(){
+    if (finished) return;
+    startBtn.disabled = true;
+    setStatus('Meminta izin kamera...', '');
+    hint.innerHTML = 'Jika Chrome menampilkan permintaan kamera, pilih <b>Izinkan</b>.';
+
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+      setStatus('Browser ini tidak mendukung akses kamera. Gunakan Chrome terbaru.', 'error');
+      startBtn.disabled = false;
+      return;
+    }
+
+    try{
+      // Panggilan langsung dari klik pengguna agar prompt izin kamera Chrome muncul.
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: { ideal: 'environment' },
+          width: { ideal: 1280 },
+          height: { ideal: 720 }
+        },
+        audio: false
+      });
+
+      video.srcObject = stream;
+      await video.play();
+      setStatus('Kamera aktif. Arahkan barcode ke kotak putih. Membaca otomatis...', '');
+      hint.textContent = 'Tidak perlu menekan tombol foto. Tahan HP stabil sampai kode terbaca.';
+
+      await startZXing();
+    }catch(err){
+      console.error(err);
+      const name = err && err.name ? err.name : '';
+      if (name === 'NotAllowedError' || name === 'PermissionDeniedError'){
+        setStatus('Akses kamera ditolak. Tekan ikon kamera/kunci di Chrome → Kamera → Izinkan, lalu muat ulang halaman scanner.', 'error');
+        hint.innerHTML = 'Setelah izin diubah menjadi <b>Izinkan</b>, tekan <b>Izinkan &amp; Mulai Scan</b> lagi.';
+      }else if(name === 'NotFoundError'){
+        setStatus('Kamera belakang tidak ditemukan pada perangkat ini.', 'error');
+      }else{
+        setStatus('Kamera tidak dapat dibuka. Coba muat ulang halaman scanner.', 'error');
+      }
+      cleanup();
+      startBtn.disabled = false;
+    }
+  }
+
+  async function startZXing(){
+    // Prioritas pertama: BarcodeDetector native untuk respons cepat.
+    if ('BarcodeDetector' in window) {
+      try {
+        const supported = await BarcodeDetector.getSupportedFormats();
+        const wanted = ['code_128','code_39','code_93','codabar','ean_13','ean_8','itf','upc_a','upc_e','qr_code'];
+        const formats = wanted.filter(function(f){ return supported.indexOf(f) !== -1; });
+        detector = new BarcodeDetector({ formats: formats.length ? formats : supported });
+
+        const detectLoop = async function(){
+          if (finished || !detector || video.readyState < 2) {
+            if (!finished) detectorFrame = requestAnimationFrame(detectLoop);
+            return;
+          }
+          try {
+            const codes = await detector.detect(video);
+            if (codes && codes.length) {
+              for (let i = 0; i < codes.length; i++) {
+                const value = String(codes[i].rawValue || '').trim();
+                if (value) { finish(value); return; }
+              }
+            }
+          } catch (e) {}
+          if (!finished) detectorFrame = requestAnimationFrame(detectLoop);
+        };
+        detectorFrame = requestAnimationFrame(detectLoop);
+        return;
+      } catch (e) {}
+    }
+
+    // Fallback lintas-browser: ZXing membaca video kamera secara kontinu.
+    if (!window.ZXingBrowser || !window.ZXingBrowser.BrowserMultiFormatReader){
+      setStatus('Mesin barcode belum termuat. Periksa koneksi internet lalu coba lagi.', 'error');
+      startBtn.disabled = false;
+      return;
+    }
+
+    try{
+      const reader = new window.ZXingBrowser.BrowserMultiFormatReader();
+      controls = await reader.decodeFromVideoElement(video, function(result){
+        if (result){
+          const text = result.getText ? result.getText() : result.text;
+          finish(text);
+        }
+      });
+    }catch(err){
+      console.error(err);
+      setStatus('Pembaca barcode gagal berjalan. Muat ulang scanner dan coba lagi.', 'error');
+      cleanup();
+      startBtn.disabled = false;
+    }
+  }
+
+  startBtn.addEventListener('click', startScan);
+  backBtn.addEventListener('click', goBack);
+  window.addEventListener('pagehide', cleanup);
+})();
+</script>
+</body>
+</html>
